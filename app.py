@@ -33,7 +33,6 @@ CLASS_NAMES = [
 model = None
 
 def load_model():
-    """Model-ийг disk-ээс ачаална (.keras эсвэл .h5)."""
     global model
     import tensorflow as tf
     path = MODEL_PATH if os.path.isfile(MODEL_PATH) else MODEL_PATH_H5
@@ -61,7 +60,16 @@ def preprocess(image_bytes: bytes) -> np.ndarray:
 
 # ── Flask app ──────────────────────────────────────────────────────────────────
 app = Flask(__name__)
-CORS(app)
+
+# CORS — бүх origin-аас POST/OPTIONS зөвшөөрнө
+CORS(app, origins="*", supports_credentials=False)
+
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"]  = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    return response
 
 # Gunicorn import хийхэд автоматаар model ачаална
 load_model()
@@ -76,8 +84,12 @@ def health():
         "class_names":  CLASS_NAMES,
     })
 
-@app.route("/predict", methods=["POST"])
+@app.route("/predict", methods=["POST", "OPTIONS"])
 def predict():
+    # Preflight request
+    if request.method == "OPTIONS":
+        return "", 204
+
     file = request.files.get("file") or request.files.get("image")
     if file is None:
         return jsonify({"error": "'file' эсвэл 'image' field шаардлагатай."}), 400
