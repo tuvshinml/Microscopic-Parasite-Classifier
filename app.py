@@ -1,4 +1,4 @@
-import os, logging, threading
+import os, logging
 import numpy as np
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -20,26 +20,17 @@ CLASS_NAMES = [
 ]
 
 model = None
-model_loading = False
-
 
 def load_model():
-    global model, model_loading
-    model_loading = True
-    try:
-        import tensorflow as tf
-        path = MODEL_PATH if os.path.isfile(MODEL_PATH) else MODEL_PATH_H5
-        if not os.path.isfile(path):
-            log.warning("Model файл олдсонгүй: %s / %s", MODEL_PATH, MODEL_PATH_H5)
-            return
-        log.info("Model ачааллаж байна: %s", path)
-        model = tf.keras.models.load_model(path)
-        log.info("Model амжилттай ачаалагдлаа.")
-    except Exception as e:
-        log.error("Model ачаалахад алдаа гарлаа: %s", e)
-    finally:
-        model_loading = False
-
+    global model
+    import tensorflow as tf
+    path = MODEL_PATH if os.path.isfile(MODEL_PATH) else MODEL_PATH_H5
+    if not os.path.isfile(path):
+        log.warning("Model файл олдсонгүй: %s / %s", MODEL_PATH, MODEL_PATH_H5)
+        return
+    log.info("Model ачааллаж байна: %s", path)
+    model = tf.keras.models.load_model(path)
+    log.info("Model амжилттай ачаалагдлаа.")
 
 def preprocess(image_bytes):
     import cv2
@@ -51,10 +42,11 @@ def preprocess(image_bytes):
     img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
     return np.expand_dims(img.astype(np.float32), axis=0)
 
+# --preload flag-тай үед master process-д нэг удаа ачаална
+load_model()
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
-
 
 @app.after_request
 def cors_headers(resp):
@@ -63,28 +55,20 @@ def cors_headers(resp):
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
     return resp
 
-
-# Model-ийг background thread-д ачаална → port нэн даруй нээгдэнэ
-threading.Thread(target=load_model, daemon=True).start()
-
-
 @app.route("/", methods=["GET"])
 def index():
     return jsonify({
         "status": "ok",
         "model_loaded": model is not None,
-        "model_loading": model_loading,
         "img_size": IMG_SIZE,
         "classes": len(CLASS_NAMES),
         "class_names": CLASS_NAMES,
     })
 
-
-# UptimeRobot ping — сервер 15 мин-д унтахаас сэргийлнэ
+# UptimeRobot ping — сервер унтахаас сэргийлнэ
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "model_loaded": model is not None}), 200
-
 
 @app.route("/predict", methods=["POST", "OPTIONS"])
 def predict():
@@ -92,9 +76,7 @@ def predict():
         return "", 204
 
     if model is None:
-        msg = ("Model ачаалагдаж байна, 30-60 секунд хүлээгээд дахин оролдоно уу."
-               if model_loading else "Model ачаалагдаагүй.")
-        return jsonify({"error": msg}), 503
+        return jsonify({"error": "Model ачаалагдаагүй."}), 503
 
     file = request.files.get("file") or request.files.get("image")
     if file is None:
@@ -126,7 +108,6 @@ def predict():
         "probabilities": [round(float(p), 6) for p in preds],
         "top3":          top3,
     })
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT, debug=False)
