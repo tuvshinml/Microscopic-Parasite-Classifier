@@ -20,7 +20,7 @@ CLASS_NAMES = [
 ]
 
 model = None
-model_loading = False  # ачаалж байгаа эсэх
+model_loading = False
 
 
 def load_model():
@@ -64,13 +64,12 @@ def cors_headers(resp):
     return resp
 
 
-# Model-ийг background thread-д ачаална
-# → port нэн даруй нээгдэж Render "live" гэж үзнэ
+# Model-ийг background thread-д ачаална → port нэн даруй нээгдэнэ
 threading.Thread(target=load_model, daemon=True).start()
 
 
 @app.route("/", methods=["GET"])
-def health():
+def index():
     return jsonify({
         "status": "ok",
         "model_loaded": model is not None,
@@ -81,15 +80,20 @@ def health():
     })
 
 
+# UptimeRobot ping — сервер 15 мин-д унтахаас сэргийлнэ
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok", "model_loaded": model is not None}), 200
+
+
 @app.route("/predict", methods=["POST", "OPTIONS"])
 def predict():
     if request.method == "OPTIONS":
         return "", 204
 
-    # Model ачаалагдаж байвал 503 буцаана
     if model is None:
-        msg = "Model ачаалагдаж байна, 30-60 секунд хүлээгээд дахин оролдоно уу." \
-              if model_loading else "Model ачаалагдаагүй."
+        msg = ("Model ачаалагдаж байна, 30-60 секунд хүлээгээд дахин оролдоно уу."
+               if model_loading else "Model ачаалагдаагүй.")
         return jsonify({"error": msg}), 503
 
     file = request.files.get("file") or request.files.get("image")
@@ -103,7 +107,6 @@ def predict():
 
     preds = model.predict(x, verbose=0)[0].astype(float)
 
-    # Softmax нормализаци (шаардлагатай бол)
     if preds.min() < 0 or preds.max() > 1 or abs(preds.sum() - 1.0) > 0.05:
         e = np.exp(preds - preds.max())
         preds = e / e.sum()
