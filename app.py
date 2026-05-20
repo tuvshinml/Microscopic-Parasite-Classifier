@@ -1,4 +1,4 @@
-import os, logging
+import os, logging, threading
 import numpy as np
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -20,17 +20,26 @@ CLASS_NAMES = [
 ]
 
 model = None
+model_loading = False  # ачаалж байгаа эсэх
+
 
 def load_model():
-    global model
-    import tensorflow as tf
-    path = MODEL_PATH if os.path.isfile(MODEL_PATH) else MODEL_PATH_H5
-    if not os.path.isfile(path):
-        log.warning("Model файл олдсонгүй: %s / %s", MODEL_PATH, MODEL_PATH_H5)
-        return
-    log.info("Model ачааллаж байна: %s", path)
-    model = tf.keras.models.load_model(path)
-    log.info("Model амжилттай ачаалагдлаа.")
+    global model, model_loading
+    model_loading = True
+    try:
+        import tensorflow as tf
+        path = MODEL_PATH if os.path.isfile(MODEL_PATH) else MODEL_PATH_H5
+        if not os.path.isfile(path):
+            log.warning("Model файл олдсонгүй: %s / %s", MODEL_PATH, MODEL_PATH_H5)
+            return
+        log.info("Model ачааллаж байна: %s", path)
+        model = tf.keras.models.load_model(path)
+        log.info("Model амжилттай ачаалагдлаа.")
+    except Exception as e:
+        log.error("Model ачаалахад алдаа гарлаа: %s", e)
+    finally:
+        model_loading = False
+
 
 def preprocess(image_bytes):
     import cv2
@@ -42,8 +51,10 @@ def preprocess(image_bytes):
     img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
     return np.expand_dims(img.astype(np.float32), axis=0)
 
+
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
+
 
 @app.after_request
 def cors_headers(resp):
@@ -52,37 +63,67 @@ def cors_headers(resp):
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
     return resp
 
-load_model()
+
+# Model-ийг background thread-д ачаална
+# → port нэн даруй нээгдэж Render "live" гэж үзнэ
+threading.Thread(target=load_model, daemon=True).start()
+
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status":"ok","model_loaded":model is not None,
-                    "img_size":IMG_SIZE,"classes":len(CLASS_NAMES),"class_names":CLASS_NAMES})
+    return jsonify({
+        "status": "ok",
+        "model_loaded": model is not None,
+        "model_loading": model_loading,
+        "img_size": IMG_SIZE,
+        "classes": len(CLASS_NAMES),
+        "class_names": CLASS_NAMES,
+    })
 
-@app.route("/predict", methods=["POST","OPTIONS"])
+
+@app.route("/predict", methods=["POST", "OPTIONS"])
 def predict():
     if request.method == "OPTIONS":
         return "", 204
+
+    # Model ачаалагдаж байвал 503 буцаана
+    if model is None:
+        msg = "Model ачаалагдаж байна, 30-60 секунд хүлээгээд дахин оролдоно уу." \
+              if model_loading else "Model ачаалагдаагүй."
+        return jsonify({"error": msg}), 503
+
     file = request.files.get("file") or request.files.get("image")
     if file is None:
-        return jsonify({"error":"'file' эсвэл 'image' field шаардлагатай."}), 400
+        return jsonify({"error": "'file' эсвэл 'image' field шаардлагатай."}), 400
+
     try:
         x = preprocess(file.read())
     except ValueError as e:
         return jsonify({"error": str(e)}), 422
-    if model is None:
-        return jsonify({"error":"Загвар ачаалагдаагүй."}), 503
+
     preds = model.predict(x, verbose=0)[0].astype(float)
-    if preds.min() < 0 or preds.max() > 1 or abs(preds.sum()-1.0) > 0.05:
+
+    # Softmax нормализаци (шаардлагатай бол)
+    if preds.min() < 0 or preds.max() > 1 or abs(preds.sum() - 1.0) > 0.05:
         e = np.exp(preds - preds.max())
         preds = e / e.sum()
+
     top_idx  = int(np.argmax(preds))
     top3_idx = np.argsort(preds)[::-1][:3].tolist()
-    top3 = [{"rank":i+1,"class_index":idx,"class_name":CLASS_NAMES[idx],
-              "confidence":round(float(preds[idx]),6)} for i,idx in enumerate(top3_idx)]
-    return jsonify({"class_index":top_idx,"class_name":CLASS_NAMES[top_idx],
-                    "confidence":round(float(preds[top_idx]),6),
-                    "probabilities":[round(float(p),6) for p in preds],"top3":top3})
+    top3 = [
+        {"rank": i+1, "class_index": idx, "class_name": CLASS_NAMES[idx],
+         "confidence": round(float(preds[idx]), 6)}
+        for i, idx in enumerate(top3_idx)
+    ]
+
+    return jsonify({
+        "class_index":   top_idx,
+        "class_name":    CLASS_NAMES[top_idx],
+        "confidence":    round(float(preds[top_idx]), 6),
+        "probabilities": [round(float(p), 6) for p in preds],
+        "top3":          top3,
+    })
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT, debug=False)
