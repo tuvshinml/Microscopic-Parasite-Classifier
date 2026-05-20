@@ -232,6 +232,9 @@ input[type=text]::placeholder{color:var(--text3)}
 .page-title{font-size:16px;font-weight:600;margin-bottom:4px;color:var(--text)}
 .page-sub{font-size:12.5px;color:var(--text2);margin-bottom:22px;line-height:1.6}
 
+/* URL hint */
+.url-hint{font-size:10.5px;color:var(--text3);font-family:'JetBrains Mono',monospace;margin-top:5px;min-height:14px}
+
 @media(max-width:640px){
   .sidebar{display:none}
   .d-grid{grid-template-columns:1fr}
@@ -289,10 +292,15 @@ input[type=text]::placeholder{color:var(--text3)}
             <span class="rdot" id="cdot"></span> Flask API endpoint
           </div>
           <div class="row">
-            <input type="text" id="api-url" placeholder="https://microscopic-parasite-classifier-voht.onrender.com/predict" value="https://microscopic-parasite-classifier-voht.onrender.com/predict">
+            <input type="text" id="api-url"
+              placeholder="https://your-server.onrender.com/predict"
+              value="https://microscopic-parasite-classifier-voht.onrender.com/predict"
+              oninput="updateUrlHint(this.value)">
             <button class="btn" onclick="testConn()">Test</button>
           </div>
-          <div id="smsg" style="font-size:11px;font-family:'JetBrains Mono',monospace;margin-top:8px;min-height:15px;color:var(--text3)"></div>
+          <!-- URL hint: /predict байгаа эсэхийг харуулна -->
+          <div class="url-hint" id="url-hint"></div>
+          <div id="smsg" style="font-size:11px;font-family:'JetBrains Mono',monospace;margin-top:4px;min-height:15px;color:var(--text3)"></div>
         </div>
 
         <div class="dropzone" id="dz">
@@ -395,6 +403,19 @@ const RCHIP = {l:"chip-g",m:"chip-a",h:"chip-r"};
 let clsNames = PS.map(p=>p.name), selFile=null;
 let openTabs = new Set(['home','enc']);
 
+// URL hint: /predict байгаа эсэхийг харуулна
+function updateUrlHint(val){
+  const hint = document.getElementById('url-hint');
+  if(!val){hint.textContent='';return;}
+  if(val.match(/\/(predict|classify|inference)$/)){
+    hint.style.color='var(--g2)';
+    hint.textContent='✓ endpoint зөв байна';
+  } else {
+    hint.style.color='var(--a)';
+    hint.textContent='⚠ /predict байхгүй — Analyze дарахад автоматаар нэмэгдэнэ';
+  }
+}
+
 function buildSidebar(){
   const el=document.getElementById('sb-parasites');
   PS.forEach(p=>{
@@ -475,9 +496,7 @@ function openTab(id){
       document.getElementById('tabbar').appendChild(t);
     }
   }
-
   document.querySelectorAll('.tabitem').forEach(t=>t.classList.toggle('on',t.dataset.id===id));
-
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('on'));
   const pg=document.getElementById('page-'+id);
   if(pg) pg.classList.add('on');
@@ -511,18 +530,34 @@ function loadFile(f){
   r.readAsDataURL(f);
 }
 
+// =====================================================
+// ЗАСВАРЛАСАН analyze() — /predict автоматаар нэмнэ
+// =====================================================
 async function analyze(){
   if(!selFile) return;
-  const url = document.getElementById('api-url').value.trim();
+  let url = document.getElementById('api-url').value.trim();
   if(!url){setMsg('Please enter the API URL.','e');return;}
-  setLoad(true);setMsg('');
+
+  // /predict (эсвэл /classify, /inference) байхгүй бол автоматаар нэмнэ
+  if(!url.match(/\/(predict|classify|inference)(\?.*)?$/)){
+    url = url.replace(/\/+$/, '') + '/predict';
+    document.getElementById('api-url').value = url;
+    updateUrlHint(url);
+  }
+
+  setLoad(true); setMsg('');
 
   const fd = new FormData();
   fd.append('file', selFile);
   fd.append('image', selFile);
 
   try{
-    const resp = await fetch(url,{method:'POST',body:fd});
+    const resp = await fetch(url, {
+      method: 'POST',
+      body: fd,
+      mode: 'cors',
+      redirect: 'follow'
+    });
     if(!resp.ok){
       const txt = await resp.text();
       let msg = `HTTP ${resp.status}`;
@@ -530,7 +565,10 @@ async function analyze(){
       throw new Error(msg);
     }
     showResult(await resp.json());
-  }catch(err){setLoad(false);showErr(err.message);}
+  }catch(err){
+    setLoad(false);
+    showErr(err.message);
+  }
 }
 
 async function testConn(){
@@ -539,7 +577,7 @@ async function testConn(){
   setMsg('Connecting…');
   const base = url.replace(/\/(predict|classify|inference)[^\s]*$/,'');
   try{
-    const res = await fetch(base,{method:'GET',signal:AbortSignal.timeout(4000)});
+    const res = await fetch(base,{method:'GET',signal:AbortSignal.timeout(6000),mode:'cors'});
     setMsg(`✓ Connected (HTTP ${res.status})`,'ok');
     document.getElementById('cdot').className='rdot ok';
   }catch(e){
@@ -610,6 +648,9 @@ function setMsg(t,type){
   const el=document.getElementById('smsg');el.textContent=t;
   el.style.color=type==='e'?'var(--r)':type==='ok'?'var(--g2)':'var(--text3)';
 }
+
+// Эхлэхэд URL hint харуулна
+updateUrlHint(document.getElementById('api-url').value);
 
 buildSidebar();buildEnc();buildDetails();
 </script>
